@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: linebot-meeting-notes
+    runtime: docker
+    region: singapore
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

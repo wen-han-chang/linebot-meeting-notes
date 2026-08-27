@@ -1,0 +1,36 @@
+"""從環境變數載入服務設定。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    line_channel_secret: str = Field(min_length=1)
+    line_channel_access_token: str = Field(min_length=1)
+    openai_api_key: str = Field(min_length=1)
+
+    transcribe_model: str = "gpt-4o-transcribe"
+    summary_model: str = "gpt-5.6-luna"
+    transcribe_prompt: str = "請保留中英夾雜、產品名稱、人名與專有名詞的原文。"
+    chunk_minutes: int = Field(default=10, ge=1, le=30)
+    max_source_mb: int = Field(default=200, ge=1, le=500)
+    max_transcript_messages: int = Field(default=15, ge=0, le=50)
+    records_dir: Path = Path("records")
+
+    @property
+    def max_source_bytes(self) -> int:
+        return self.max_source_mb * 1024 * 1024
+
+    @property
+    def chunk_seconds(self) -> float:
+        return float(self.chunk_minutes * 60)

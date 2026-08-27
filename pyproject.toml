@@ -1,0 +1,45 @@
+[project]
+name = "linebot-meeting-notes"
+version = "0.1.0"
+description = "LINE Bot meeting transcription and minutes assistant"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116.0",
+    "httpx>=0.28.0",
+    "openai>=2.53.0",
+    "pydantic-settings>=2.10.0",
+    "uvicorn[standard]>=0.35.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=1.0",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["linebot_meeting"]
+
+# Windows 的 site 模組可能用 cp950 讀取 editable .pth；專案路徑含中文字時會失敗。
+# 本機從專案根目錄直接執行即可，Docker 的 `pip install .` 仍會建立正式 wheel。
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+exclude = [".uv-cache", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
