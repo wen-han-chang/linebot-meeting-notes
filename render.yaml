@@ -5,7 +5,6 @@ services:
     plan: free
     region: singapore
     healthCheckPath: /health
-    maxShutdownDelaySeconds: 300
     envVars:
       - key: LINE_CHANNEL_SECRET
         sync: false
