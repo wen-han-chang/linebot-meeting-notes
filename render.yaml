@@ -2,6 +2,7 @@ services:
   - type: web
     name: linebot-meeting-notes
     runtime: docker
+    plan: free
     region: singapore
     healthCheckPath: /health
     maxShutdownDelaySeconds: 300

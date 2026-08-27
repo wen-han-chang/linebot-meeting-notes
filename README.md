@@ -96,10 +96,9 @@ https://你的網址.ngrok-free.app/webhook
 - `LINE_CHANNEL_ACCESS_TOKEN`
 - `OPENAI_API_KEY`
 
-`render.yaml` 已設定 Singapore 區域與 `/health` 健康檢查。由於沒有指定 `plan`，
-Render 新服務會預設使用付費 Starter instance。若只是短期測試，可先在
-`render.yaml` 的服務下加入 `plan: free`；Free instance 閒置後會休眠，而且不保留
-`records/` 內的檔案，不建議當正式服務。
+`render.yaml` 已設定 Singapore 區域、Free instance 與 `/health` 健康檢查。
+Free instance 閒置後會休眠，而且不保留 `records/` 內的檔案，適合測試但不建議
+當正式服務；正式上線時請將 `plan` 改成 `starter` 或更高方案。
 
 部署完成後，將 `https://你的服務.onrender.com/webhook` 設成 LINE webhook。
 
