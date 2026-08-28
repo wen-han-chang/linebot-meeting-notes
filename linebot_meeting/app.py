@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import deque
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ HELP_TEXT = (
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or Settings()  # type: ignore[call-arg]
     line = LineClient(resolved.line_channel_access_token)
+    media_slots = asyncio.Semaphore(resolved.max_concurrent_jobs)
     seen_events: set[str] = set()
     seen_order: deque[str] = deque()
 
@@ -44,6 +46,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await line.close()
 
     app = FastAPI(title="LINE Bot Meeting Notes", lifespan=lifespan)
+
+    async def process_media_with_limit(event: dict[str, Any]) -> None:
+        message_id = str(event.get("message", {}).get("id", ""))
+        if media_slots.locked():
+            logger.info("影音任務等待處理名額：message_id=%s", message_id)
+        async with media_slots:
+            logger.info("影音任務取得處理名額：message_id=%s", message_id)
+            await process_media_event(event, resolved, line)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -93,18 +103,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     continue
                 if reply_token:
                     video = is_video_message(message)
+                    waiting = media_slots.locked()
                     await line.reply(
                         reply_token,
                         [
                             (
-                                "收到影片，正在擷取音軌並轉成會議記錄；"
+                                "目前正在處理另一份影音，這份已排入等待；"
+                                if waiting
+                                else ""
+                            )
+                            + (
+                                "收到影片，將擷取音軌並轉成會議記錄；"
                                 if video
-                                else "收到錄音，正在轉成會議記錄；"
+                                else "收到錄音，將轉成會議記錄；"
                             )
                             + "完成後會再傳回這個聊天室。"
                         ],
                     )
-                background_tasks.add_task(process_media_event, event, resolved, line)
+                background_tasks.add_task(process_media_with_limit, event)
             elif event_type == "message" and reply_token:
                 await line.reply(
                     reply_token, ["目前只支援常見的影音訊息或檔案。\n\n" + HELP_TEXT]

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     transcribe_prompt: str = "請保留中英夾雜、產品名稱、人名與專有名詞的原文。"
     chunk_minutes: int = Field(default=10, ge=1, le=30)
     max_source_mb: int = Field(default=200, ge=1, le=500)
+    max_media_minutes: int = Field(default=180, ge=1, le=1440)
+    max_concurrent_jobs: int = Field(default=1, ge=1, le=4)
     max_transcript_messages: int = Field(default=15, ge=0, le=50)
     records_dir: Path = Path("records")
 
@@ -34,3 +36,7 @@ class Settings(BaseSettings):
     @property
     def chunk_seconds(self) -> float:
         return float(self.chunk_minutes * 60)
+
+    @property
+    def max_media_seconds(self) -> float:
+        return float(self.max_media_minutes * 60)

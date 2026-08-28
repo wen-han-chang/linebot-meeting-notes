@@ -9,10 +9,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .audio import AudioProcessingError, MediaTooLongError
 from .config import Settings
-from .line_api import LineClient, split_text, target_from_source
+from .line_api import (
+    FileTooLargeError,
+    LineAPIError,
+    LineClient,
+    split_text,
+    target_from_source,
+)
 from .minutes import create_minutes, render_minutes
-from .transcription import transcribe_recording
+from .transcription import TranscriptionError, transcribe_recording
 
 logger = logging.getLogger(__name__)
 AUDIO_FILE_EXTENSIONS = {
@@ -60,6 +67,21 @@ def is_video_message(message: dict[str, Any]) -> bool:
         return False
     suffix = Path(str(message.get("fileName", ""))).suffix.lower()
     return suffix in VIDEO_FILE_EXTENSIONS
+
+
+def user_error_message(exc: Exception, settings: Settings) -> str:
+    """將內部錯誤轉成不洩漏憑證或第三方回應內容的使用者訊息。"""
+    if isinstance(exc, FileTooLargeError):
+        return f"❌ 影音檔超過 {settings.max_source_mb}MB，請壓縮後再傳。"
+    if isinstance(exc, MediaTooLongError):
+        return f"❌ 影音長度超過 {settings.max_media_minutes} 分鐘的處理上限。"
+    if isinstance(exc, AudioProcessingError):
+        return "❌ 無法讀取影音音軌，請確認檔案未損壞且包含聲音。"
+    if isinstance(exc, TranscriptionError):
+        return "❌ 語音轉錄服務暫時失敗，請稍後再傳一次。"
+    if isinstance(exc, LineAPIError):
+        return "❌ 從 LINE 下載影音失敗，請稍後重新傳送。"
+    return "❌ 影音處理發生未預期錯誤，請稍後重試。"
 
 
 def _save_record(
@@ -130,7 +152,13 @@ async def process_media_event(
         except Exception:
             logger.exception("會議摘要失敗，仍回傳逐字稿")
 
-        _save_record(settings, message_id, minutes_text, transcript.text)
+        try:
+            _save_record(settings, message_id, minutes_text, transcript.text)
+        except OSError:
+            # Render Free 的檔案系統是暫時性的；保存失敗不應擋住 LINE 回傳。
+            logger.exception(
+                "會議記錄寫入本機失敗，仍繼續推送：message_id=%s", message_id
+            )
 
         messages: list[str] = []
         if minutes_text:
@@ -155,7 +183,7 @@ async def process_media_event(
         try:
             await line.push(
                 target,
-                [f"❌ 這份錄音處理失敗：{type(exc).__name__}。請確認格式或稍後重試。"],
+                [user_error_message(exc, settings)],
             )
         except Exception:
             logger.exception("錯誤通知也無法送出")

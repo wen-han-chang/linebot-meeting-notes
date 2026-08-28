@@ -11,6 +11,8 @@
   mp4、mov、mkv、avi、m4v、wmv、3gp、ts 等常見影片檔
 - 驗證 `x-line-signature`，避免偽造 webhook
 - webhook 先立即回覆，耗時工作放到背景執行
+- 預設一次只處理一份影音，避免免費主機同時壓縮多個大檔而耗盡資源
+- 預設拒絕超過 180 分鐘的影音，避免意外產生大量 API 費用
 - 用 ffmpeg 直接擷取影片音軌，避免耗時且不必要的整支影片重編碼
 - 將音軌轉成 16kHz 單聲道 MP3，每 10 分鐘切段後轉錄
 - 產生重點摘要、決議、待辦事項、未解問題與完整逐字稿
@@ -118,6 +120,8 @@ Free instance 閒置後會休眠，而且不保留 `records/` 內的檔案，適
 | `TRANSCRIBE_PROMPT` | 內建繁中提示 | 可加入公司、人名與產品專有名詞 |
 | `CHUNK_MINUTES` | `10` | 每個轉錄片段的最長分鐘數 |
 | `MAX_SOURCE_MB` | `200` | 接收音訊的大小上限 |
+| `MAX_MEDIA_MINUTES` | `180` | 單一影音允許的最長分鐘數 |
+| `MAX_CONCURRENT_JOBS` | `1` | 同一服務同時處理的影音任務數 |
 | `MAX_TRANSCRIPT_MESSAGES` | `15` | 最多傳回幾段逐字稿；0 代表不傳逐字稿 |
 | `RECORDS_DIR` | `records` | 伺服器端 Markdown 記錄目錄 |
 

@@ -21,6 +21,10 @@ class AudioProcessingError(RuntimeError):
     pass
 
 
+class MediaTooLongError(AudioProcessingError):
+    pass
+
+
 @dataclass(frozen=True)
 class Chunk:
     path: Path
@@ -144,8 +148,20 @@ def split(path: Path, workdir: Path, chunk_seconds: float) -> list[Chunk]:
     return chunks
 
 
-def prepare(source: Path, workdir: Path, *, max_chunk_seconds: float) -> list[Chunk]:
+def prepare(
+    source: Path,
+    workdir: Path,
+    *,
+    max_chunk_seconds: float,
+    max_media_seconds: float | None = None,
+) -> list[Chunk]:
     ensure_ffmpeg()
+    source_duration = probe_duration(source)
+    if max_media_seconds is not None and source_duration > max_media_seconds:
+        raise MediaTooLongError(
+            f"影音長度 {source_duration / 60:.1f} 分鐘，"
+            f"超過上限 {max_media_seconds / 60:.0f} 分鐘。"
+        )
     compressed = compress(source, workdir)
     duration = probe_duration(compressed)
     seconds = plan_chunk_seconds(

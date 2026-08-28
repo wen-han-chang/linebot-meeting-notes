@@ -63,6 +63,7 @@ def transcribe_recording(source: Path, settings: Settings) -> Transcript:
             source,
             Path(temporary),
             max_chunk_seconds=settings.chunk_seconds,
+            max_media_seconds=settings.max_media_seconds,
         )
         client = OpenAI(api_key=settings.openai_api_key)
         parts = [_transcribe_file(client, chunk.path, settings) for chunk in chunks]
