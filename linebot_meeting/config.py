@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     max_source_mb: int = Field(default=200, ge=1, le=500)
     max_media_minutes: int = Field(default=180, ge=1, le=1440)
     max_concurrent_jobs: int = Field(default=1, ge=1, le=4)
+    max_queued_jobs: int = Field(default=3, ge=0, le=20)
+    openai_timeout_seconds: float = Field(default=180, ge=10, le=600)
+    ffmpeg_timeout_seconds: int = Field(default=1800, ge=60, le=7200)
     max_transcript_messages: int = Field(default=15, ge=0, le=50)
     records_dir: Path = Path("records")
 

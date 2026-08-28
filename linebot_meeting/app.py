@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections import deque
 from contextlib import asynccontextmanager
@@ -10,7 +9,9 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
+from .audio import ensure_ffmpeg
 from .config import Settings
+from .jobs import JobLimiter
 from .line_api import LineClient, target_from_source, verify_signature
 from .service import is_supported_message, is_video_message, process_media_event
 
@@ -28,7 +29,7 @@ HELP_TEXT = (
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or Settings()  # type: ignore[call-arg]
     line = LineClient(resolved.line_channel_access_token)
-    media_slots = asyncio.Semaphore(resolved.max_concurrent_jobs)
+    jobs = JobLimiter(resolved.max_concurrent_jobs, resolved.max_queued_jobs)
     seen_events: set[str] = set()
     seen_order: deque[str] = deque()
 
@@ -41,6 +42,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # 缺少 ffmpeg 時讓部署直接失敗，不讓壞掉的版本接收 webhook。
+        ensure_ffmpeg()
         resolved.records_dir.mkdir(parents=True, exist_ok=True)
         yield
         await line.close()
@@ -49,15 +52,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def process_media_with_limit(event: dict[str, Any]) -> None:
         message_id = str(event.get("message", {}).get("id", ""))
-        if media_slots.locked():
-            logger.info("影音任務等待處理名額：message_id=%s", message_id)
-        async with media_slots:
+        async with jobs.execution():
             logger.info("影音任務取得處理名額：message_id=%s", message_id)
             await process_media_event(event, resolved, line)
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> dict[str, str | int]:
+        stats = await jobs.stats()
+        return {
+            "status": "ok",
+            "active_jobs": stats.active,
+            "queued_jobs": stats.queued,
+            "job_capacity": stats.capacity,
+        }
 
     @app.post("/webhook")
     async def webhook(
@@ -101,25 +108,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if not target_from_source(event.get("source", {})):
                     logger.warning("無法判斷背景推送目標，略過事件")
                     continue
+                admission = await jobs.reserve()
+                if not admission.accepted:
+                    if reply_token:
+                        await line.reply(
+                            reply_token,
+                            [
+                                "目前影音處理佇列已滿，為避免系統過載，"
+                                "請稍後再重新傳送。"
+                            ],
+                        )
+                    if event_id:
+                        remember_event(event_id)
+                    continue
                 if reply_token:
                     video = is_video_message(message)
-                    waiting = media_slots.locked()
-                    await line.reply(
-                        reply_token,
-                        [
-                            (
-                                "目前正在處理另一份影音，這份已排入等待；"
-                                if waiting
-                                else ""
-                            )
-                            + (
-                                "收到影片，將擷取音軌並轉成會議記錄；"
-                                if video
-                                else "收到錄音，將轉成會議記錄；"
-                            )
-                            + "完成後會再傳回這個聊天室。"
-                        ],
-                    )
+                    try:
+                        await line.reply(
+                            reply_token,
+                            [
+                                (
+                                    "目前正在處理另一份影音，這份已排入等待；"
+                                    if admission.waiting
+                                    else ""
+                                )
+                                + (
+                                    "收到影片，將擷取音軌並轉成會議記錄；"
+                                    if video
+                                    else "收到錄音，將轉成會議記錄；"
+                                )
+                                + "完成後會再傳回這個聊天室。"
+                            ],
+                        )
+                    except Exception:
+                        await jobs.cancel_reservation()
+                        raise
                 background_tasks.add_task(process_media_with_limit, event)
             elif event_type == "message" and reply_token:
                 await line.reply(

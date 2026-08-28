@@ -1,10 +1,13 @@
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from linebot_meeting.audio import (
     SAFE_UPLOAD_BYTES,
+    AudioProcessingError,
     MediaTooLongError,
+    _run,
     plan_chunk_seconds,
     prepare,
 )
@@ -39,3 +42,12 @@ def test_prepare_rejects_overlong_media_before_compression(monkeypatch) -> None:
             max_chunk_seconds=600,
             max_media_seconds=10_800,
         )
+
+
+def test_ffmpeg_timeout_becomes_audio_processing_error(monkeypatch) -> None:
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=1)
+
+    monkeypatch.setattr("linebot_meeting.audio.subprocess.run", timeout)
+    with pytest.raises(AudioProcessingError, match="超過 1 秒"):
+        _run(["ffmpeg", "-version"], timeout_seconds=1)

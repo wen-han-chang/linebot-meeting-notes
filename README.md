@@ -12,7 +12,10 @@
 - 驗證 `x-line-signature`，避免偽造 webhook
 - webhook 先立即回覆，耗時工作放到背景執行
 - 預設一次只處理一份影音，避免免費主機同時壓縮多個大檔而耗盡資源
+- 等待佇列預設最多三份，超量時立即拒絕，避免無上限累積背景任務
 - 預設拒絕超過 180 分鐘的影音，避免意外產生大量 API 費用
+- LINE push、影音下載、OpenAI 轉錄與摘要均針對暫時錯誤有限次重試
+- ffmpeg 與 OpenAI 請求都有逾時上限，異常檔案不會永久占用工作名額
 - 用 ffmpeg 直接擷取影片音軌，避免耗時且不必要的整支影片重編碼
 - 將音軌轉成 16kHz 單聲道 MP3，每 10 分鐘切段後轉錄
 - 產生重點摘要、決議、待辦事項、未解問題與完整逐字稿
@@ -76,6 +79,12 @@ uv run uvicorn linebot_meeting.app:app --reload --port 8000
 
 確認服務：<http://127.0.0.1:8000/health>
 
+健康檢查也會顯示目前執行中與等待中的任務數：
+
+```json
+{"status":"ok","active_jobs":0,"queued_jobs":0,"job_capacity":4}
+```
+
 ## 3. 讓 LINE 連到本機
 
 LINE webhook 必須是公開 HTTPS 網址。開發時可用 ngrok 或 Cloudflare Tunnel，
@@ -122,6 +131,9 @@ Free instance 閒置後會休眠，而且不保留 `records/` 內的檔案，適
 | `MAX_SOURCE_MB` | `200` | 接收音訊的大小上限 |
 | `MAX_MEDIA_MINUTES` | `180` | 單一影音允許的最長分鐘數 |
 | `MAX_CONCURRENT_JOBS` | `1` | 同一服務同時處理的影音任務數 |
+| `MAX_QUEUED_JOBS` | `3` | 最多允許等待處理的影音任務數 |
+| `OPENAI_TIMEOUT_SECONDS` | `180` | 單次 OpenAI 請求逾時秒數 |
+| `FFMPEG_TIMEOUT_SECONDS` | `1800` | 單次 ffmpeg 壓縮或切段逾時秒數 |
 | `MAX_TRANSCRIPT_MESSAGES` | `15` | 最多傳回幾段逐字稿；0 代表不傳逐字稿 |
 | `RECORDS_DIR` | `records` | 伺服器端 Markdown 記錄目錄 |
 
@@ -144,3 +156,6 @@ uv run ruff format --check .
 - 依 LINE user／group ID 的使用權限與用量限制
 - 隱私告知、保存期限、自動刪除與敏感資料政策
 - OpenAI 與 LINE API 的用量監控及告警
+
+目前的任務佇列仍存在單一 Web 程序記憶體中，只能防止過載；Render 重啟或部署
+仍會中斷未完成任務。需要跨重啟續跑時，必須改用持久化佇列與獨立 Worker。

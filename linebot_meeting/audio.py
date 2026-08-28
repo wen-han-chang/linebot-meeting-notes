@@ -11,6 +11,7 @@ from pathlib import Path
 SAFE_UPLOAD_BYTES = 24 * 1024 * 1024
 TARGET_SAMPLE_RATE = 16_000
 TARGET_BITRATE_KBPS = 48
+PROBE_TIMEOUT_SECONDS = 60
 
 
 class FFmpegMissingError(RuntimeError):
@@ -39,14 +40,22 @@ def ensure_ffmpeg() -> None:
         )
 
 
-def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+def _run(
+    command: list[str], *, timeout_seconds: int
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AudioProcessingError(
+            f"{command[0]} 執行超過 {timeout_seconds} 秒，已停止處理。"
+        ) from exc
     if result.returncode != 0:
         raise AudioProcessingError(
             f"{command[0]} 執行失敗（exit {result.returncode}）："
@@ -66,7 +75,8 @@ def probe_duration(path: Path) -> float:
             "-of",
             "json",
             str(path),
-        ]
+        ],
+        timeout_seconds=PROBE_TIMEOUT_SECONDS,
     )
     try:
         duration = float(json.loads(result.stdout)["format"]["duration"])
@@ -77,7 +87,7 @@ def probe_duration(path: Path) -> float:
     return duration
 
 
-def compress(source: Path, workdir: Path) -> Path:
+def compress(source: Path, workdir: Path, *, timeout_seconds: int = 1800) -> Path:
     workdir.mkdir(parents=True, exist_ok=True)
     destination = workdir / "compressed_16k.mp3"
     _run(
@@ -96,7 +106,8 @@ def compress(source: Path, workdir: Path) -> Path:
             "-c:a",
             "libmp3lame",
             str(destination),
-        ]
+        ],
+        timeout_seconds=timeout_seconds,
     )
     return destination
 
@@ -117,7 +128,13 @@ def plan_chunk_seconds(
     return min(duration, max_duration, size_limited)
 
 
-def split(path: Path, workdir: Path, chunk_seconds: float) -> list[Chunk]:
+def split(
+    path: Path,
+    workdir: Path,
+    chunk_seconds: float,
+    *,
+    timeout_seconds: int = 1800,
+) -> list[Chunk]:
     pattern = workdir / "chunk_%03d.mp3"
     _run(
         [
@@ -134,7 +151,8 @@ def split(path: Path, workdir: Path, chunk_seconds: float) -> list[Chunk]:
             "-c",
             "copy",
             str(pattern),
-        ]
+        ],
+        timeout_seconds=timeout_seconds,
     )
     paths = sorted(workdir.glob("chunk_*.mp3"))
     if not paths:
@@ -154,6 +172,7 @@ def prepare(
     *,
     max_chunk_seconds: float,
     max_media_seconds: float | None = None,
+    ffmpeg_timeout_seconds: int = 1800,
 ) -> list[Chunk]:
     ensure_ffmpeg()
     source_duration = probe_duration(source)
@@ -162,7 +181,11 @@ def prepare(
             f"影音長度 {source_duration / 60:.1f} 分鐘，"
             f"超過上限 {max_media_seconds / 60:.0f} 分鐘。"
         )
-    compressed = compress(source, workdir)
+    compressed = compress(
+        source,
+        workdir,
+        timeout_seconds=ffmpeg_timeout_seconds,
+    )
     duration = probe_duration(compressed)
     seconds = plan_chunk_seconds(
         compressed.stat().st_size,
@@ -171,4 +194,9 @@ def prepare(
     )
     if seconds >= duration:
         return [Chunk(compressed, 0.0)]
-    return split(compressed, workdir, seconds)
+    return split(
+        compressed,
+        workdir,
+        seconds,
+        timeout_seconds=ffmpeg_timeout_seconds,
+    )

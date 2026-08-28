@@ -6,6 +6,8 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,9 @@ API_BASE = "https://api.line.me"
 DATA_API_BASE = "https://api-data.line.me"
 LINE_TEXT_LIMIT = 5000
 LINE_MESSAGE_BATCH = 5
+PUSH_MAX_ATTEMPTS = 3
+
+logger = logging.getLogger(__name__)
 
 
 class LineAPIError(RuntimeError):
@@ -69,17 +74,50 @@ class LineClient:
         if self._owns_client:
             await self.client.aclose()
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> None:
-        response = await self.client.post(
-            f"{API_BASE}{path}",
-            headers=self.headers,
-            json=payload,
-        )
-        if response.is_error:
-            raise LineAPIError(
-                f"LINE API {path} 失敗（HTTP {response.status_code}）："
-                f"{response.text[:500]}"
+    async def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        retry_key: str | None = None,
+    ) -> None:
+        attempts = PUSH_MAX_ATTEMPTS if retry_key else 1
+        last_error = "未知錯誤"
+        headers = dict(self.headers)
+        if retry_key:
+            headers["X-Line-Retry-Key"] = retry_key
+
+        for attempt in range(attempts):
+            try:
+                response = await self.client.post(
+                    f"{API_BASE}{path}",
+                    headers=headers,
+                    json=payload,
+                )
+            except httpx.TransportError as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                retryable = retry_key is not None
+            else:
+                # 相同 retry key 回傳 409，表示先前請求已被 LINE 接受。
+                if response.is_success or (retry_key and response.status_code == 409):
+                    return
+                last_error = f"HTTP {response.status_code}：{response.text[:500]}"
+                retryable = response.status_code == 429 or response.status_code >= 500
+
+            if not retryable or attempt >= attempts - 1:
+                break
+            delay = 2**attempt
+            logger.warning(
+                "LINE API 暫時失敗，%s 秒後重試：path=%s attempt=%s/%s error=%s",
+                delay,
+                path,
+                attempt + 1,
+                attempts,
+                last_error,
             )
+            await asyncio.sleep(delay)
+
+        raise LineAPIError(f"LINE API {path} 失敗：{last_error}")
 
     async def reply(self, reply_token: str, texts: list[str]) -> None:
         messages = [
@@ -104,47 +142,76 @@ class LineClient:
                         for text in batch
                     ],
                 },
+                retry_key=str(uuid.uuid4()),
             )
 
     async def _wait_until_ready(self, message_id: str) -> None:
         url = f"{DATA_API_BASE}/v2/bot/message/{message_id}/content/transcoding"
         for delay in (1, 2, 3, 5, 8, 13):
-            response = await self.client.get(url, headers=self.headers)
-            if response.is_success:
-                status = response.json().get("status")
-                if status == "succeeded":
-                    return
-                if status == "failed":
-                    raise LineAPIError("LINE 無法準備這個音訊檔。")
+            try:
+                response = await self.client.get(url, headers=self.headers)
+            except httpx.TransportError:
+                logger.warning("查詢 LINE 影音轉碼狀態暫時失敗，將重試")
+            else:
+                if response.is_success:
+                    status = response.json().get("status")
+                    if status == "succeeded":
+                        return
+                    if status == "failed":
+                        raise LineAPIError("LINE 無法準備這個影音檔。")
             await asyncio.sleep(delay)
-        raise LineAPIError("等待 LINE 準備音訊逾時，請稍後重傳。")
+        raise LineAPIError("等待 LINE 準備影音逾時，請稍後重傳。")
 
     async def download(
         self, message_id: str, destination: Path, max_bytes: int
     ) -> None:
         url = f"{DATA_API_BASE}/v2/bot/message/{message_id}/content"
-        for attempt in range(2):
-            async with self.client.stream("GET", url, headers=self.headers) as response:
-                if response.status_code == 202 and attempt == 0:
-                    await response.aread()
-                    await self._wait_until_ready(message_id)
-                    continue
-                if response.is_error:
-                    detail = (await response.aread()).decode(errors="replace")
-                    raise LineAPIError(
-                        f"下載 LINE 音訊失敗（HTTP {response.status_code}）："
-                        f"{detail[:300]}"
-                    )
-                declared = int(response.headers.get("content-length", 0))
-                if declared > max_bytes:
-                    raise FileTooLargeError("音訊檔超過服務允許的大小。")
+        last_error = "未知錯誤"
+        waited_for_transcoding = False
+        for attempt in range(3):
+            try:
+                async with self.client.stream(
+                    "GET", url, headers=self.headers
+                ) as response:
+                    if response.status_code == 202:
+                        await response.aread()
+                        if not waited_for_transcoding:
+                            await self._wait_until_ready(message_id)
+                            waited_for_transcoding = True
+                        else:
+                            last_error = "LINE 影音仍在準備中"
+                        continue
+                    if response.is_error:
+                        detail = (await response.aread()).decode(errors="replace")
+                        last_error = f"HTTP {response.status_code}：{detail[:300]}"
+                        if response.status_code != 429 and response.status_code < 500:
+                            raise LineAPIError(f"下載 LINE 影音失敗：{last_error}")
+                    else:
+                        declared = int(response.headers.get("content-length", 0))
+                        if declared > max_bytes:
+                            raise FileTooLargeError("影音檔超過服務允許的大小。")
 
-                total = 0
-                with destination.open("wb") as output:
-                    async for data in response.aiter_bytes():
-                        total += len(data)
-                        if total > max_bytes:
-                            raise FileTooLargeError("音訊檔超過服務允許的大小。")
-                        output.write(data)
-                return
-        raise LineAPIError("LINE 音訊尚未準備完成。")
+                        total = 0
+                        with destination.open("wb") as output:
+                            async for data in response.aiter_bytes():
+                                total += len(data)
+                                if total > max_bytes:
+                                    raise FileTooLargeError(
+                                        "影音檔超過服務允許的大小。"
+                                    )
+                                output.write(data)
+                        return
+            except httpx.TransportError as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+
+            if attempt < 2:
+                delay = 2**attempt
+                logger.warning(
+                    "下載 LINE 影音暫時失敗，%s 秒後重試：attempt=%s/3 error=%s",
+                    delay,
+                    attempt + 1,
+                    last_error,
+                )
+                await asyncio.sleep(delay)
+
+        raise LineAPIError(f"下載 LINE 影音重試 3 次仍失敗：{last_error}")
