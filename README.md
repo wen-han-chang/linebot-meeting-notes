@@ -1,15 +1,18 @@
 # LINE Bot 會議記錄助理
 
-把 LINE 語音訊息或音訊檔轉成繁體中文會議記錄。這個專案沿用
+把 LINE 語音、影片或影音檔轉成繁體中文會議記錄。這個專案沿用
 `錄音轉文字` 專案的 ffmpeg 壓縮／切段概念，介面改成 LINE Messaging API，
 並新增結構化摘要。
 
 ## 功能
 
-- 接受 LINE 語音訊息，以及 mp3、m4a、wav、flac、ogg、webm 等音訊檔
+- 接受 LINE 原生語音與影片訊息
+- 接受 mp3、m4a、wav、flac、ogg、webm 等音訊檔，以及
+  mp4、mov、mkv、avi、m4v、wmv、3gp、ts 等常見影片檔
 - 驗證 `x-line-signature`，避免偽造 webhook
 - webhook 先立即回覆，耗時工作放到背景執行
-- 將錄音轉成 16kHz 單聲道 MP3，每 10 分鐘切段後轉錄
+- 用 ffmpeg 直接擷取影片音軌，避免耗時且不必要的整支影片重編碼
+- 將音軌轉成 16kHz 單聲道 MP3，每 10 分鐘切段後轉錄
 - 產生重點摘要、決議、待辦事項、未解問題與完整逐字稿
 - 支援一對一、群組與多人聊天室
 - 完整結果另存到伺服器的 `records/` 目錄
@@ -20,8 +23,8 @@
 LINE webhook
   → 驗證簽章
   → 立即回覆「處理中」
-  → 下載音訊
-  → ffmpeg 壓縮與切段
+  → 下載影音
+  → ffmpeg 擷取音軌、壓縮與切段
   → OpenAI 語音轉文字
   → OpenAI Responses API 整理會議記錄
   → LINE push message 傳回原聊天室

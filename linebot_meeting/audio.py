@@ -1,4 +1,4 @@
-"""用 ffmpeg 將錄音壓縮並切成適合語音轉錄的片段。"""
+"""用 ffmpeg 從影音擷取音軌、壓縮並切成適合語音轉錄的片段。"""
 
 from __future__ import annotations
 

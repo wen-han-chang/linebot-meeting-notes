@@ -15,27 +15,51 @@ from .minutes import create_minutes, render_minutes
 from .transcription import transcribe_recording
 
 logger = logging.getLogger(__name__)
-ALLOWED_FILE_EXTENSIONS = {
+AUDIO_FILE_EXTENSIONS = {
     ".aac",
     ".flac",
     ".m4a",
     ".mp3",
-    ".mp4",
     ".mpeg",
     ".ogg",
     ".wav",
     ".webm",
 }
+VIDEO_FILE_EXTENSIONS = {
+    ".3g2",
+    ".3gp",
+    ".avi",
+    ".m2ts",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".mp4",
+    ".mts",
+    ".ts",
+    ".webm",
+    ".wmv",
+}
+ALLOWED_FILE_EXTENSIONS = AUDIO_FILE_EXTENSIONS | VIDEO_FILE_EXTENSIONS
 
 
 def is_supported_message(message: dict[str, Any]) -> bool:
-    if message.get("type") == "audio":
+    if message.get("type") in {"audio", "video"}:
         return True
     if message.get("type") != "file":
         return False
     return (
         Path(str(message.get("fileName", ""))).suffix.lower() in ALLOWED_FILE_EXTENSIONS
     )
+
+
+def is_video_message(message: dict[str, Any]) -> bool:
+    """判斷 LINE 原生影片或以檔案附件傳送的影片。"""
+    if message.get("type") == "video":
+        return True
+    if message.get("type") != "file":
+        return False
+    suffix = Path(str(message.get("fileName", ""))).suffix.lower()
+    return suffix in VIDEO_FILE_EXTENSIONS
 
 
 def _save_record(
@@ -67,16 +91,40 @@ async def process_media_event(
         logger.warning("事件缺少回覆目標或 message ID")
         return
 
-    file_name = str(message.get("fileName", "recording.m4a"))
-    suffix = Path(file_name).suffix.lower() or ".m4a"
+    video = is_video_message(message)
+    default_name = "video.mp4" if video else "recording.m4a"
+    file_name = str(message.get("fileName", default_name))
+    suffix = Path(file_name).suffix.lower() or (".mp4" if video else ".m4a")
     try:
+        logger.info(
+            "開始處理 LINE %s：message_id=%s file_name=%s",
+            "影片" if video else "錄音",
+            message_id,
+            file_name,
+        )
         with tempfile.TemporaryDirectory(prefix="line_download_") as temporary:
             source = Path(temporary) / f"source{suffix}"
             await line.download(message_id, source, settings.max_source_bytes)
+            logger.info(
+                "LINE 影音下載完成：message_id=%s size_bytes=%s",
+                message_id,
+                source.stat().st_size,
+            )
+            logger.info(
+                "%s音軌壓縮與轉錄開始：message_id=%s",
+                "影片" if video else "錄音",
+                message_id,
+            )
             transcript = await asyncio.to_thread(transcribe_recording, source, settings)
+            logger.info(
+                "語音轉錄完成：message_id=%s characters=%s",
+                message_id,
+                len(transcript.text),
+            )
 
         minutes_text: str | None = None
         try:
+            logger.info("會議摘要開始：message_id=%s", message_id)
             minutes = await asyncio.to_thread(create_minutes, transcript.text, settings)
             minutes_text = render_minutes(minutes)
         except Exception:
@@ -101,8 +149,9 @@ async def process_media_event(
             )
         messages.extend(transcript_parts)
         await line.push(target, messages)
+        logger.info("LINE 會議記錄推送完成：message_id=%s", message_id)
     except Exception as exc:
-        logger.exception("處理 LINE 音訊失敗")
+        logger.exception("處理 LINE 影音失敗：message_id=%s", message_id)
         try:
             await line.push(
                 target,
